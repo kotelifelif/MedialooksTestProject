@@ -1,14 +1,45 @@
 ﻿#include "ISplitter.h"
 
-#include <map>
+#include <atomic>
+#include <unordered_map>
 #include <chrono>
+#include <mutex>
+#include <condition_variable>
+#include <deque>
+
+using time_point = std::chrono::time_point<std::chrono::system_clock, std::chrono::system_clock::duration>;
 
 struct Client {
 	uint32_t m_unClientID {0};
 	size_t m_zLattency {0};
 	size_t m_zDropped {0};
-	std::chrono::time_point<std::chrono::system_clock, std::chrono::system_clock::duration>
-		m_unTime;
+	time_point m_tpTime;
+	Client* m_pcNext;
+	Client* m_pcPrev;
+};
+
+bool operator != (Client& _lClient, Client& _rClient) {
+	return _lClient != _rClient;
+}
+
+struct Keeper
+{
+	Keeper(std::atomic<uint32_t>& v, std::condition_variable& cv) : m_val(v), m_cv(cv) { ++m_val; }
+	~Keeper()
+	{
+		--m_val;
+		m_cv.notify_all();
+	}
+	std::atomic<uint32_t>& m_val;
+	std::condition_variable& m_cv;
+};
+
+enum class SplitterResult {
+	Success = 0,
+	Interrupted = 1,
+	Dropped = 2,
+	NoClient = 3,
+	Timeout = 4
 };
 
 
@@ -57,9 +88,21 @@ public:
 
 private:
 	bool FindFreeId(uint32_t* _punClientID);
+	int32_t Flush(bool _bClear);
+	void ExtractClient(Client* _client);
+	void PutClient(Client* _client);
 
 	size_t m_zMaxBuffers;
 	size_t m_zMaxClients;
-	uint32_t m_unCurrentClientSize;
-	std::map<uint32_t, Client> m_clients;
+	std::unordered_map<uint32_t, Client> m_umClients;
+	std::deque <time_point, std::shared_ptr<std::vector<uint8_t>>> m_dData;
+	std::mutex m_mClientMutex;
+	std::mutex m_mBufferMutex;
+	std::condition_variable m_cvVariablePut;
+	std::condition_variable m_cvVariableGet;
+	std::condition_variable m_cvVariableClear;
+	Client* m_pcRecent{ nullptr };
+	Client* m_pcOld{ nullptr };
+	std::atomic<bool> m_bInterrupt{ false };
+	std::atomic<uint32_t> m_nThreadCount{ 0 };
 };
